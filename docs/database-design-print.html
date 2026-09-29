@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BookMyShow Ticketing Database Design</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172321;
+      --muted: #52645f;
+      --green: #087f62;
+      --line: #c9d8d2;
+      --wash: #edf5f1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0 auto;
+      max-width: 900px;
+      padding: 38px 48px;
+      color: var(--ink);
+      font: 14px/1.52 Georgia, "Times New Roman", serif;
+    }
+    h1, h2, h3, th, .eyebrow, .meta { font-family: "Segoe UI", Arial, sans-serif; }
+    h1 { margin: 8px 0 12px; font-size: 34px; line-height: 1.1; }
+    h2 { margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 2px solid var(--green); font-size: 21px; }
+    h3 { margin: 18px 0 6px; font-size: 15px; }
+    p { margin: 7px 0 11px; }
+    .eyebrow { color: var(--green); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .lede { max-width: 670px; color: var(--muted); font-size: 17px; }
+    .meta { margin-top: 24px; color: var(--muted); font-size: 11px; }
+    .callout { margin: 16px 0; padding: 12px 15px; border-left: 4px solid var(--green); background: var(--wash); }
+    table { width: 100%; margin: 12px 0 18px; border-collapse: collapse; font-size: 11px; }
+    th { padding: 7px; background: #173b32; color: white; text-align: left; }
+    td { padding: 7px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    tr:nth-child(even) td { background: #f5f8f6; }
+    code, pre { font-family: Consolas, "Courier New", monospace; }
+    code { color: #075b48; font-size: 0.92em; }
+    pre { overflow-wrap: anywhere; white-space: pre-wrap; padding: 12px 14px; background: #f1f5f3; border: 1px solid var(--line); font-size: 10.5px; line-height: 1.45; }
+    ul, ol { padding-left: 21px; }
+    li { margin: 4px 0; }
+    .small { color: var(--muted); font-size: 11px; }
+    .page-break { break-before: page; }
+    @page { size: A4; margin: 15mm 14mm 16mm; }
+    @media print {
+      body { max-width: none; padding: 0; font-size: 12px; }
+      h1 { font-size: 31px; }
+      h2 { break-after: avoid; }
+      table, pre, .callout { break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">Database Engineering Assignment / MySQL 8</div>
+    <h1>BookMyShow Ticketing</h1>
+    <p class="lede">Normalized theatre, showtime, seat inventory, timed holds, bookings, payments, and webhook idempotency.</p>
+    <p class="meta">Submission document | MySQL 8.0.16+ | Timestamps stored in UTC</p>
+  </header>
+
+  <div class="callout"><strong>Design boundary:</strong> InnoDB is the authority for seat ownership. Redis may accelerate availability hints, but a Redis key alone never confirms a hold or booking.</div>
+
+  <h2>Entities and Tables</h2>
+  <table>
+    <thead><tr><th>Table</th><th>Key attributes</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td>users</td><td>user_id PK, email UQ, full_name, created_at</td><td>Customer placing a booking.</td></tr>
+      <tr><td>movies</td><td>movie_id PK, title, language_code, duration_minutes, certificate</td><td>Movie metadata.</td></tr>
+      <tr><td>theatres</td><td>theatre_id PK, name, address, city, time_zone</td><td>Venue and local date context.</td></tr>
+      <tr><td>screens</td><td>screen_id PK, theatre_id FK, name; UQ(theatre_id,name)</td><td>Auditorium in a theatre.</td></tr>
+      <tr><td>seats</td><td>seat_id PK, screen_id FK, row_label, seat_number, seat_type; UQ(screen,row,number)</td><td>Stable physical seat map.</td></tr>
+      <tr><td>showtimes</td><td>showtime_id PK, screen_id FK, movie_id FK, starts_at_utc, ends_at_utc, status</td><td>Movie scheduled in a screen.</td></tr>
+      <tr><td>show_seats</td><td>PK(showtime_id,seat_id), price</td><td>Published per-show inventory and stable lock row.</td></tr>
+      <tr><td>bookings</td><td>booking_id PK, showtime_id FK, user_id FK, status, hold_expires_at, total_amount, currency</td><td>One customer's attempt/order for a show.</td></tr>
+      <tr><td>booking_seats</td><td>booking_seat_id PK, booking_id FK, seat_id FK, price_at_booking; UQ(booking_id,seat_id)</td><td>Historical requested-seat and price snapshot.</td></tr>
+      <tr><td>seat_allocations</td><td>PK(showtime_id,seat_id), booking_seat_id UQ, state, hold_expires_at</td><td>Current holds/booked seats only. No row means unallocated.</td></tr>
+      <tr><td>payments</td><td>payment_id PK, booking_id FK, provider IDs, idempotency_key, amount, currency, status</td><td>Payment attempts; unique constraints prevent duplicate success.</td></tr>
+      <tr><td>payment_webhook_events</td><td>webhook_event_id PK, provider, provider_event_id UQ, payment_id FK, event type, JSON payload, status</td><td>Durable deduplicated webhook inbox.</td></tr>
+        <tr><td>users</td><td>user_id PK, email UQ, full_name, created_at</td><td>Customer placing a booking.</td></tr>
+        <tr><td>movies</td><td>movie_id PK, title, language_code, duration_minutes, nullable certificate</td><td>Movie metadata.</td></tr>
+        <tr><td>theatres</td><td>theatre_id PK, name, address, city, time_zone</td><td>Venue and local date context.</td></tr>
+        <tr><td>screens</td><td>screen_id PK, theatre_id FK, name; UQ(theatre_id,name)</td><td>Auditorium in a theatre.</td></tr>
+        <tr><td>seats</td><td>seat_id PK, screen_id FK, row_label, seat_number, seat_type; UQ(screen,row,number)</td><td>Stable physical seat map.</td></tr>
+        <tr><td>showtimes</td><td>showtime_id PK, screen_id FK, movie_id FK, starts_at_utc, ends_at_utc, status</td><td>Movie scheduled in a screen.</td></tr>
+        <tr><td>show_seats</td><td>showtime_id PK part, seat_id PK part, price</td><td>Published per-show inventory and stable lock row.</td></tr>
+        <tr><td>bookings</td><td>booking_id PK, showtime_id FK, user_id FK, status, nullable hold_expires_at, total_amount, currency, created_at, updated_at</td><td>One customer's attempt/order for a show.</td></tr>
+        <tr><td>booking_seats</td><td>booking_seat_id PK, booking_id FK, seat_id FK, price_at_booking, created_at; UQ(booking_id,seat_id)</td><td>Historical requested-seat and price snapshot.</td></tr>
+        <tr><td>seat_allocations</td><td>showtime_id PK part, seat_id PK part, booking_seat_id UQ/FK, state, nullable hold_expires_at</td><td>Current holds/booked seats only. No row means unallocated.</td></tr>
+        <tr><td>payments</td><td>payment_id PK, booking_id FK, provider, nullable provider_payment_id, idempotency_key, amount, currency, status, generated nullable successful_booking_id, created_at, updated_at</td><td>Payment attempts; unique constraints prevent duplicate success.</td></tr>
+        <tr><td>payment_webhook_events</td><td>webhook_event_id PK, provider, provider_event_id UQ, nullable payment_id FK, event_type, processing_status, JSON payload, received_at, nullable processed_at</td><td>Durable deduplicated webhook inbox.</td></tr>
+    </tbody>
+  </table>
+  <p class="small">The executable DDL and fixtures are in <code>sql/02_create_tables.sql</code> and <code>sql/03_sample_data.sql</code>.</p>
+
+  <h3>Representative sample rows</h3>
+  <table>
+    <thead><tr><th>Table</th><th>Sample record</th></tr></thead>
+    <tbody>
+      <tr><td>users</td><td>(1, anaya@example.com, Anaya Rao)</td></tr>
+      <tr><td>movies</td><td>(101, The Last Monsoon, en, 142 min, UA)</td></tr>
+      <tr><td>theatres</td><td>(201, Orion Screens, Bengaluru, Asia/Kolkata)</td></tr>
+      <tr><td>screens / seats</td><td>(301, theatre 201, Screen 1) / (401, screen 301, A1, PREMIUM)</td></tr>
+      <tr><td>showtimes</td><td>(1001, screen 301, movie 101, 2026-10-01 13:30-15:52 UTC)</td></tr>
+      <tr><td>bookings</td><td>(5001, show 1001, user 1, CONFIRMED, INR 600.00)</td></tr>
+      <tr><td>show_seats / booking_seats</td><td>(1001, seat 401, INR 300.00) / (5011, booking 5001, seat 401, INR 300.00)</td></tr>
+      <tr><td>seat_allocations</td><td>(show 1001, seat 401, booking-seat 5011, BOOKED)</td></tr>
+      <tr><td>payments</td><td>(6001, booking 5001, DEMO_PAY, SUCCEEDED, INR 600.00)</td></tr>
+      <tr><td>payment_webhook_events</td><td>(7001, DEMO_PAY, demo-event-5001-paid, payment.succeeded, PROCESSED)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Normalization</h2>
+  <ul>
+    <li><strong>1NF:</strong> Attributes are scalar; seat selections are rows, not lists stored on a booking.</li>
+    <li><strong>2NF:</strong> Descriptive values depend on their full candidate key. Seat and show details are separate from booking-seat records.</li>
+    <li><strong>3NF:</strong> Theatre data lives in theatres; screens reference theatres; showtimes reference screens and movies. No theatre or movie description is copied into a showtime.</li>
+    <li><strong>BCNF:</strong> Entity determinants are candidate keys. Inventory uses (showtime, seat); allocations have candidate keys (showtime, seat) and booking_seat_id. booking_seats does not repeat showtime, which is determined by its booking.</li>
+  </ul>
+  <p>Insert/update triggers verify that inventory seats belong to the scheduled screen, booking-seat snapshots exist in the booking's show, and allocation owners match the show and seat. The offered price and the historical price are different facts: future price changes cannot rewrite an existing booking.</p>
+
+  <div class="page-break"></div>
+  <h2>Seat Holds and Concurrency</h2>
+  <ol>
+    <li>Create a <code>PENDING</code> booking with a UTC expiry, typically five minutes ahead.</li>
+    <li>Lock the selected <code>show_seats</code> rows using <code>SELECT ... FOR UPDATE</code>, in ascending seat order for multi-seat requests.</li>
+    <li>Insert a <code>booking_seats</code> price snapshot and then a <code>seat_allocations</code> row. Release any expired allocation in the same transaction before reclaiming it.</li>
+    <li>Require one inserted allocation per requested seat. The allocation primary key prevents double ownership. If any seat conflicts, roll back the whole transaction.</li>
+    <li>Store the total from locked inventory prices and commit. Return a successful hold only after commit.</li>
+  </ol>
+  <p>An expiry worker locks the pending booking and its inventory rows, deletes only expired allocation rows still held by that booking, and marks the booking <code>EXPIRED</code> atomically. Booking-seat history remains for auditability.</p>
+
+  <h3>Expiry and payment race</h3>
+  <p>Expiry and payment confirmation lock the booking and seat inventory in the same order. Payment success is accepted only while the booking is pending, before expiry, and every requested seat still has a matching held allocation. The transaction marks the booking confirmed and allocations booked. If expiry wins, a late successful charge is refunded or compensated; it must not reclaim the seat.</p>
+
+  <h2>Idempotent Payment Webhooks</h2>
+  <ol>
+    <li>Verify provider signature and timestamp before accepting an event.</li>
+    <li>Insert into <code>payment_webhook_events</code>; unique (provider, provider_event_id) makes retries idempotent.</li>
+    <li>In one transaction, lock event/payment/booking, validate payment ID, amount, currency, and booking state, then update payment, booking, allocations, and event status.</li>
+    <li>Dispatch ticket, email, and refund side effects through an outbox or independently idempotent workers.</li>
+  </ol>
+  <p>The payment idempotency key handles retried payment creation. A generated unique successful-booking key permits at most one successful payment per booking while allowing failed attempts.</p>
+
+  <h2>P2: Shows for Theatre and Date</h2>
+  <p>Convert local midnight and the following local midnight in the theatre's IANA time zone to UTC in the application. Pass those instants as a half-open interval; resolving both boundaries separately handles 23- and 25-hour DST days.</p>
+  <pre>SELECT sh.showtime_id, m.title AS movie_title, m.language_code,
+       sc.name AS screen_name, sh.starts_at_utc, sh.ends_at_utc
+FROM theatres AS th
+JOIN screens AS sc ON sc.theatre_id = th.theatre_id
+JOIN showtimes AS sh ON sh.screen_id = sc.screen_id
+JOIN movies AS m ON m.movie_id = sh.movie_id
+WHERE th.theatre_id = @theatre_id
+  AND sh.status = 'SCHEDULED'
+  AND sh.starts_at_utc &gt;= @day_start_utc
+  AND sh.starts_at_utc &lt; @day_end_utc
+ORDER BY sh.starts_at_utc, m.title, sc.name;</pre>
+  <p>See <code>sql/05_p2_show_query.sql</code> for the directly executable parameterized query.</p>
+
+  <div class="page-break"></div>
+  <h2>Concurrency Test</h2>
+  <p><code>sql/06_concurrency_test.sql</code> is a two-session check. Run it concurrently in two MySQL clients, setting the test user to 2 in one session and 3 in the other. Both target show 1001, seat 403. One should report one seat acquired; the other should report zero after the conflicting allocation is observed. Reset the fixture seat between runs.</p>
+
+  <h2>Burst Load Test</h2>
+  <p>The repository contains no running API, so a measured system load result cannot be produced from the SQL-only starter. The k6 script targets the hold API contract and proves the one-winner property once connected to a backend.</p>
+  <pre>k6 run -e BASE_URL=http://localhost:8080 \
+  -e SHOW_ID=1001 -e SEAT_ID=403 -e VUS=500 \
+  tests/seat-contention.js</pre>
+  <p>Expected contract: <code>POST /v1/holds</code> returns 201 for the single winner and 409 for losing contenders. The test thresholds exactly one successful hold and less than 1% unexpected HTTP failures. Repeat with varied seats and ramped arrivals; record p95/p99 latency, throughput, lock waits, deadlocks, database CPU, Redis pressure, expiry lag, and queue depth. A same-seat burst validates exclusivity, not platform-wide capacity.</p>
+
+  <h2>Run Order</h2>
+  <pre>mysql -u root -p &lt; sql/01_create_database.sql
+mysql -u root -p &lt; sql/02_create_tables.sql
+mysql -u root -p &lt; sql/03_sample_data.sql
+mysql -u root -p &lt; sql/04_p1_queries.sql
+mysql -u root -p &lt; sql/05_p2_show_query.sql</pre>
+  <p class="small">Requires MySQL 8.0.16+ for enforced CHECK constraints. The bootstrap is non-destructive. Full operational notes and sample-row details are in <code>docs/database-design.md</code>.</p>
+</body>
+</html>
