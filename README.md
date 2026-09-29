@@ -25,4 +25,4 @@ The database bootstrap is non-destructive: it does not drop existing data. To re
 - [Two-session SQL contention check](sql/06_concurrency_test.sql)
 - [k6 seat contention test](tests/seat-contention.js)
 
-The starter repository has no API service, so the k6 test is an executable contract test for a service exposing `POST /v1/holds`; the expected request, responses, and run instructions are in the design document.
+The starter repository has no API service, so the k6 test is an executable contract test for a service exposing `POST /v1/holds`; the expected request, responses, and run instructions are in the design document .
